@@ -84,10 +84,9 @@ with tab1:
                         st.rerun()
 
                 # График цен
-                price_history = item_data['price_history']
-                if price_history:
-                    dates = [datetime.fromisoformat(date) for date, _ in price_history]
-                    prices = [price for _, price in price_history]
+                if item_data['price_history']:
+                    dates = [datetime.fromisoformat(date) for date, _ in item_data['price_history']]
+                    prices = [price for _, price in item_data['price_history']]
 
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
@@ -112,21 +111,25 @@ with tab2:
     # Настройки поиска
     col1, col2, col3 = st.columns(3)
     with col1:
-        min_profit = st.slider("Минимальная прибыль (%)", 1, 100, 5)
+        min_profit = st.slider("Минимальная прибыль (%)", 1, 100, 3)
     with col2:
-        stability_threshold = st.slider("Минимальная стабильность", 10, 200, 50, 
-            help="Выше значение - более стабильные предметы с высоким объемом продаж")
+        category_filter = st.selectbox(
+            "Категория предметов",
+            ["Все", "Редкие предметы", "Обычные предметы"]
+        )
     with col3:
         max_items = st.number_input("Количество предметов для анализа", 100, 1000, 500)
 
     # Дополнительные фильтры
     show_filters = st.checkbox("Показать дополнительные фильтры")
     if show_filters:
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             min_price = st.number_input("Минимальная цена (₽)", 0, 10000, 0)
         with col2:
-            max_price = st.number_input("Максимальная цена (₽)", 0, 100000, 10000)
+            max_price = st.number_input("Максимальная цена (₽)", 0, 100000, 100000)
+        with col3:
+            min_volume = st.number_input("Минимальный объем продаж", 1, 1000, 3)
 
     if st.button("🔄 Найти выгодные предметы"):
         with st.spinner("Анализ рынка... Это может занять некоторое время"):
@@ -136,9 +139,14 @@ with tab2:
                 # Применяем фильтры
                 filtered_items = [
                     item for item in profitable_items
-                    if (item['stability_score'] >= stability_threshold and
+                    if (
                         (not show_filters or
-                         (min_price <= item['current_price'] <= max_price)))
+                         (min_price <= item['current_price'] <= max_price and
+                          item['volume'] >= min_volume)) and
+                        (category_filter == "Все" or
+                         (category_filter == "Редкие предметы" and item['category'] == "Rare") or
+                         (category_filter == "Обычные предметы" and item['category'] == "Common"))
+                    )
                 ]
 
                 if filtered_items:
@@ -154,34 +162,17 @@ with tab2:
                     with col3:
                         st.metric("Средняя волатильность", f"{df['volatility'].mean():.1f}%")
                     with col4:
-                        st.metric("Средняя стабильность", f"{df['stability_score'].mean():.0f}")
-
-                    # Сортировка
-                    sort_by = st.selectbox(
-                        "Сортировать по:",
-                        ["Прибыль", "Стабильность", "Объем продаж", "Волатильность"]
-                    )
-
-                    sort_mapping = {
-                        "Прибыль": "profit_percent",
-                        "Стабильность": "stability_score",
-                        "Объем продаж": "volume",
-                        "Волатильность": "volatility"
-                    }
-
-                    filtered_items.sort(
-                        key=lambda x: x[sort_mapping[sort_by]],
-                        reverse=True
-                    )
+                        st.metric("Активных продаж", f"{df['sell_listings'].mean():.0f}")
 
                     # Показываем каждый предмет
                     for item in filtered_items:
                         with st.container():
                             st.write("---")
-                            col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1])
+                            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
 
                             with col1:
                                 st.write(f"**{item['name']}**")
+                                st.write(f"Категория: {item['category']}")
                             with col2:
                                 st.write(f"Текущая цена: {item['current_price']:.2f} ₽")
                                 st.write(f"Медианная цена: {item['median_price']:.2f} ₽")
@@ -189,9 +180,6 @@ with tab2:
                                 st.write(f"Прибыль: {item['profit_percent']:.1f}%")
                                 st.write(f"Объем продаж: {item['volume']}")
                             with col4:
-                                st.write(f"Активных продаж: {item['sell_listings']}")
-                                st.write(f"Стабильность: {item['stability_score']:.0f}")
-                            with col5:
                                 if st.button("Отслеживать", key=f"watch_profitable_{item['name']}"):
                                     data_manager.add_watched_item(item['name'], item['current_price'])
                                     st.success("Предмет добавлен в отслеживаемые!")
@@ -199,12 +187,12 @@ with tab2:
                 else:
                     st.warning(
                         "Нет предметов, соответствующих выбранным критериям. "
-                        "Попробуйте уменьшить требования к стабильности или изменить фильтры цен."
+                        "Попробуйте изменить фильтры или категорию предметов."
                     )
             else:
                 st.warning(
                     "Выгодных предложений не найдено. "
-                    "Попробуйте увеличить количество анализируемых предметов или уменьшить минимальную прибыль."
+                    "Попробуйте уменьшить минимальную прибыль или увеличить количество анализируемых предметов."
                 )
 
 # Обновление цен
