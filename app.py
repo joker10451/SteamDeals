@@ -30,7 +30,7 @@ with tab1:
             items = steam_api.search_items(search_query)
             if items:
                 st.subheader("Результаты поиска")
-                for item in items:
+                for item in items[:20]:  # Показываем только первые 20 результатов
                     col1, col2, col3 = st.columns([3, 2, 1])
                     with col1:
                         st.write(item['name'])
@@ -52,7 +52,7 @@ with tab1:
     if not watched_items:
         st.info("У вас пока нет отслеживаемых предметов")
     else:
-        # Фильтры (unchanged from original)
+        # Фильтры
         min_price_watched = st.slider("Минимальная цена (₽)", 0, 10000, 0, key="min_price_watched")
         max_price_watched = st.slider("Максимальная цена (₽)", 0, 10000, 10000, key="max_price_watched")
 
@@ -63,7 +63,7 @@ with tab1:
             if current_price_data and 'lowest_price' in current_price_data:
                 current_price = steam_api._parse_price(current_price_data['lowest_price'])
 
-                # Применяем фильтры (unchanged from original)
+                # Применяем фильтры
                 if current_price < min_price_watched or current_price > max_price_watched:
                     continue
 
@@ -83,7 +83,7 @@ with tab1:
                         data_manager.remove_watched_item(item_name)
                         st.rerun()
 
-                # График цен (unchanged from original)
+                # График цен
                 price_history = item_data['price_history']
                 if price_history:
                     dates = [datetime.fromisoformat(date) for date, _ in price_history]
@@ -109,44 +109,76 @@ with tab1:
 with tab2:
     st.subheader("💰 Выгодные предложения для перепродажи")
 
-    # Настройки поиска (modified from edited)
+    # Настройки поиска
     col1, col2, col3 = st.columns(3)
     with col1:
         min_profit = st.slider("Минимальная прибыль (%)", 1, 100, 5)
     with col2:
-        min_volume = st.number_input("Минимальный объем продаж", 1, 1000, 10)
+        stability_threshold = st.slider("Минимальная стабильность", 10, 200, 50, 
+            help="Выше значение - более стабильные предметы с высоким объемом продаж")
     with col3:
         max_items = st.number_input("Количество предметов для анализа", 100, 1000, 500)
+
+    # Дополнительные фильтры
+    show_filters = st.checkbox("Показать дополнительные фильтры")
+    if show_filters:
+        col1, col2 = st.columns(2)
+        with col1:
+            min_price = st.number_input("Минимальная цена (₽)", 0, 10000, 0)
+        with col2:
+            max_price = st.number_input("Максимальная цена (₽)", 0, 100000, 10000)
 
     if st.button("🔄 Найти выгодные предметы"):
         with st.spinner("Анализ рынка... Это может занять некоторое время"):
             profitable_items = steam_api.find_profitable_items(min_profit, max_items)
 
             if profitable_items:
-                # Фильтруем по объему продаж (modified from edited)
+                # Применяем фильтры
                 filtered_items = [
                     item for item in profitable_items
-                    if item['volume'] >= min_volume
+                    if (item['stability_score'] >= stability_threshold and
+                        (not show_filters or
+                         (min_price <= item['current_price'] <= max_price)))
                 ]
 
                 if filtered_items:
                     st.success(f"Найдено {len(filtered_items)} выгодных предложений!")
 
-                    # Показываем статистику (modified from edited)
+                    # Показываем статистику
                     df = pd.DataFrame(filtered_items)
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.metric("Средняя прибыль", f"{df['profit_percent'].mean():.1f}%")
                     with col2:
                         st.metric("Средний объем продаж", f"{df['volume'].mean():.0f}")
                     with col3:
                         st.metric("Средняя волатильность", f"{df['volatility'].mean():.1f}%")
+                    with col4:
+                        st.metric("Средняя стабильность", f"{df['stability_score'].mean():.0f}")
 
-                    # Показываем каждый предмет (modified from edited)
+                    # Сортировка
+                    sort_by = st.selectbox(
+                        "Сортировать по:",
+                        ["Прибыль", "Стабильность", "Объем продаж", "Волатильность"]
+                    )
+
+                    sort_mapping = {
+                        "Прибыль": "profit_percent",
+                        "Стабильность": "stability_score",
+                        "Объем продаж": "volume",
+                        "Волатильность": "volatility"
+                    }
+
+                    filtered_items.sort(
+                        key=lambda x: x[sort_mapping[sort_by]],
+                        reverse=True
+                    )
+
+                    # Показываем каждый предмет
                     for item in filtered_items:
                         with st.container():
                             st.write("---")
-                            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                            col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1])
 
                             with col1:
                                 st.write(f"**{item['name']}**")
@@ -157,16 +189,25 @@ with tab2:
                                 st.write(f"Прибыль: {item['profit_percent']:.1f}%")
                                 st.write(f"Объем продаж: {item['volume']}")
                             with col4:
+                                st.write(f"Активных продаж: {item['sell_listings']}")
+                                st.write(f"Стабильность: {item['stability_score']:.0f}")
+                            with col5:
                                 if st.button("Отслеживать", key=f"watch_profitable_{item['name']}"):
                                     data_manager.add_watched_item(item['name'], item['current_price'])
                                     st.success("Предмет добавлен в отслеживаемые!")
                                     st.rerun()
                 else:
-                    st.warning("Нет предметов, соответствующих выбранным критериям. Попробуйте уменьшить минимальный объем продаж.")
+                    st.warning(
+                        "Нет предметов, соответствующих выбранным критериям. "
+                        "Попробуйте уменьшить требования к стабильности или изменить фильтры цен."
+                    )
             else:
-                st.warning("Выгодных предложений не найдено. Попробуйте увеличить количество анализируемых предметов.")
+                st.warning(
+                    "Выгодных предложений не найдено. "
+                    "Попробуйте увеличить количество анализируемых предметов или уменьшить минимальную прибыль."
+                )
 
-# Обновление цен (unchanged from original, but with price parsing improvement)
+# Обновление цен
 if watched_items:
     if st.button("🔄 Обновить все цены"):
         with st.spinner("Обновление цен..."):

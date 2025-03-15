@@ -42,13 +42,14 @@ class SteamMarketAPI:
         """Поиск предметов по названию с пагинацией"""
         try:
             params = {
-                'appid': '730',
+                'appid': '730',  # CS:GO
                 'query': query,
                 'start': start,
                 'count': count,
-                'sort_column': 'price',  # Сортировка по цене
-                'sort_dir': 'asc',       # По возрастанию
-                'norender': 1            # Только JSON ответ
+                'search_descriptions': 0,  # Не ищем в описаниях
+                'sort_column': 'popular',  # Сортировка по популярности
+                'sort_dir': 'desc',        # По убыванию
+                'norender': 1              # Только JSON ответ
             }
 
             response = self.session.get(self.SEARCH_URL, params=params)
@@ -65,7 +66,9 @@ class SteamMarketAPI:
         start = 0
         batch_size = 100
 
+        # Получаем предметы порциями
         while processed_items < max_items:
+            # Ищем популярные предметы
             items = self.search_items("", start, batch_size)
             if not items:
                 break
@@ -73,34 +76,42 @@ class SteamMarketAPI:
             for item in items:
                 try:
                     name = item['name']
+                    sell_listings = int(item.get('sell_listings', 0))  # Количество активных продаж
+
+                    # Пропускаем предметы с малым количеством продаж
+                    if sell_listings < 10:
+                        continue
 
                     # Парсим текущую цену
                     current_price = self._parse_price(item.get('sell_price_text', item.get('price', '0')))
                     if current_price <= 0:
                         continue
 
-                    # Получаем историю цен
-                    history_data = self.get_item_price(name)
-                    if not history_data:
+                    # Получаем текущие рыночные данные
+                    market_data = self.get_item_price(name)
+                    if not market_data:
                         continue
 
-                    # Парсим цены из истории
-                    lowest_price = self._parse_price(history_data.get('lowest_price', '0'))
-                    median_price = self._parse_price(history_data.get('median_price', '0'))
-                    volume = int(history_data.get('volume', '0'))
+                    # Парсим цены
+                    lowest_price = self._parse_price(market_data.get('lowest_price', '0'))
+                    median_price = self._parse_price(market_data.get('median_price', '0'))
+                    volume = int(market_data.get('volume', '0'))
 
-                    if lowest_price <= 0 or median_price <= 0:
+                    if lowest_price <= 0 or median_price <= 0 or volume < 10:
                         continue
 
-                    # Рассчитываем потенциальную прибыль
+                    # Рассчитываем метрики
                     potential_profit = median_price - current_price
                     potential_profit_percent = (potential_profit / current_price) * 100
                     price_volatility = ((median_price - lowest_price) / lowest_price) * 100
 
+                    # Оценка стабильности предмета
+                    stability_score = volume * (1 + (sell_listings / 100))  # Больше объем и листингов - стабильнее
+
                     # Проверяем критерии выгодности
                     if (potential_profit_percent >= min_profit_percent and 
                         price_volatility >= 5 and 
-                        volume > 10):  # Минимальный объем продаж
+                        stability_score >= 50):  # Минимальный порог стабильности
 
                         profitable_items.append({
                             'name': name,
@@ -109,7 +120,9 @@ class SteamMarketAPI:
                             'lowest_price': lowest_price,
                             'profit_percent': potential_profit_percent,
                             'volatility': price_volatility,
-                            'volume': volume
+                            'volume': volume,
+                            'sell_listings': sell_listings,
+                            'stability_score': stability_score
                         })
 
                 except Exception as e:
@@ -120,8 +133,11 @@ class SteamMarketAPI:
                     break
 
             start += batch_size
-            time.sleep(0.5)  # Небольшая задержка между запросами
+            time.sleep(0.5)  # Задержка между запросами
 
-        # Сортируем по потенциальной прибыли и объему продаж
-        profitable_items.sort(key=lambda x: (x['profit_percent'] * x['volume'], x['volatility']), reverse=True)
+        # Сортируем по комплексному показателю: прибыль * стабильность
+        profitable_items.sort(
+            key=lambda x: (x['profit_percent'] * x['stability_score'], x['volume']), 
+            reverse=True
+        )
         return profitable_items
