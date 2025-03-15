@@ -7,4 +7,5 @@ dependencies = [
     "plotly>=6.0.0",
     "requests>=2.32.3",
     "streamlit>=1.43.2",
+    "trafilatura>=2.0.0",
 ]
