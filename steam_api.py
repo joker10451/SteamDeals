@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 class SteamMarketAPI:
     BASE_URL = "https://steamcommunity.com/market/priceoverview/"
     HISTORY_URL = "https://steamcommunity.com/market/pricehistory/"
+    SEARCH_URL = "https://steamcommunity.com/market/search/render/"
 
     def __init__(self):
         self.session = requests.Session()
@@ -24,7 +25,7 @@ class SteamMarketAPI:
             response = self.session.get(self.BASE_URL, params=params)
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as e:
+        except requests.RequestException:
             return None
 
     def get_price_history(self, item_name: str) -> Optional[Dict]:
@@ -51,64 +52,101 @@ class SteamMarketAPI:
         except requests.RequestException:
             return None
 
-    def search_items(self, query: str) -> list:
-        """Поиск предметов по названию"""
+    def search_items(self, query: str, start: int = 0) -> List[Dict]:
+        """Поиск предметов по названию с пагинацией"""
         try:
             params = {
                 'appid': '730',
                 'query': query,
-                'count': 100  # Увеличим количество результатов
+                'start': start,
+                'count': 100,
+                'sort_column': 'popular',
+                'sort_dir': 'desc'
             }
-            response = self.session.get(
-                "https://steamcommunity.com/market/search/render/",
-                params=params
-            )
+            response = self.session.get(self.SEARCH_URL, params=params)
             response.raise_for_status()
             return response.json().get('results', [])
         except requests.RequestException:
             return []
 
-    def find_profitable_items(self, min_profit_percent: float = 10.0) -> List[Dict]:
+    def _parse_price(self, price_str: str) -> float:
+        """Парсинг цены из строки"""
+        try:
+            return float(price_str.replace('₽', '').replace(',', '.').strip())
+        except (ValueError, AttributeError):
+            return 0.0
+
+    def find_profitable_items(self, min_profit_percent: float = 5.0, max_items: int = 300) -> List[Dict]:
         """Поиск выгодных предметов для перепродажи"""
         profitable_items = []
+        processed_items = 0
+        start = 0
 
-        # Получаем популярные предметы
-        popular_items = self.search_items("")  # Пустой запрос для получения популярных предметов
+        while processed_items < max_items:
+            # Получаем предметы порциями
+            items = self.search_items("", start)
+            if not items:
+                break
 
-        for item in popular_items:
-            try:
-                name = item['name']
-                current_price = float(item.get('price', '0').replace(',', '.').replace('₽', '').strip())
+            for item in items:
+                try:
+                    name = item['name']
+                    current_price = self._parse_price(item.get('sell_price_text', item.get('price', '0')))
 
-                # Получаем историю цен
-                history_data = self.get_price_history(name)
-                if not history_data or not history_data.get('prices'):
+                    if current_price <= 0:
+                        continue
+
+                    # Получаем историю цен
+                    history_data = self.get_price_history(name)
+                    if not history_data or not history_data.get('prices'):
+                        continue
+
+                    # Анализируем историю цен за последние 7 дней
+                    prices = []
+                    week_ago = datetime.now() - timedelta(days=7)
+
+                    for price_entry in history_data['prices']:
+                        try:
+                            date = datetime.strptime(price_entry[0], '%b %d %Y %H: +0')
+                            if date >= week_ago:
+                                prices.append(float(price_entry[1]))
+                        except (ValueError, IndexError):
+                            continue
+
+                    if not prices:
+                        continue
+
+                    avg_price = sum(prices) / len(prices)
+                    max_price = max(prices)
+                    min_price = min(prices)
+                    price_volatility = (max_price - min_price) / min_price * 100
+
+                    # Рассчитываем потенциальную прибыль
+                    potential_profit_percent = ((avg_price - current_price) / current_price) * 100
+
+                    # Добавляем предмет, если он соответствует критериям
+                    if potential_profit_percent >= min_profit_percent and price_volatility >= 5:
+                        profitable_items.append({
+                            'name': name,
+                            'current_price': current_price,
+                            'avg_price': avg_price,
+                            'min_price': min_price,
+                            'max_price': max_price,
+                            'profit_percent': potential_profit_percent,
+                            'volatility': price_volatility,
+                            'volume': item.get('volume', 0)
+                        })
+
+                except Exception as e:
                     continue
 
-                # Анализируем историю цен
-                prices = [float(price[1]) for price in history_data['prices']]
-                if not prices:
-                    continue
+                processed_items += 1
+                if processed_items >= max_items:
+                    break
 
-                min_price = min(prices[-30:]) if len(prices) >= 30 else min(prices)  # За последние 30 дней
-                avg_price = sum(prices[-30:]) / min(30, len(prices))
+            start += len(items)
+            time.sleep(1)  # Задержка между запросами
 
-                # Рассчитываем потенциальную прибыль
-                potential_profit_percent = ((avg_price - current_price) / current_price) * 100
-
-                if potential_profit_percent >= min_profit_percent:
-                    profitable_items.append({
-                        'name': name,
-                        'current_price': current_price,
-                        'avg_price': avg_price,
-                        'min_price': min_price,
-                        'profit_percent': potential_profit_percent,
-                        'volume': item.get('volume', 0)
-                    })
-
-            except (ValueError, KeyError, ZeroDivisionError):
-                continue
-
-        # Сортируем по потенциальной прибыли
-        profitable_items.sort(key=lambda x: x['profit_percent'], reverse=True)
+        # Сортируем по потенциальной прибыли и волатильности
+        profitable_items.sort(key=lambda x: (x['profit_percent'], x['volatility']), reverse=True)
         return profitable_items
